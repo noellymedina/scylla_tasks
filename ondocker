@@ -1,0 +1,166 @@
+#
+#Creating a subnet
+
+docker network create --driver bridge scylla-net --subnet 172.19.0.0/16
+docker network inspect scylla-net
+
+#Creating containers
+
+docker run --name b2 --privileged --network scylla-net --ip 172.19.0.2 -v /mnt/xfs/b2:/var/lib/scylla -v /home/noelly/scylla.yaml:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.2
+docker run --name b3 --privileged --network scylla-net --ip 172.19.0.3 -v /mnt/xfs/b3:/var/lib/scylla -v /home/noelly/scylla.yaml2:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties2:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.2
+docker run --name b4 --privileged --network scylla-net --ip 172.19.0.4 -v /mnt/xfs/b4:/var/lib/scylla -v /home/noelly/scylla.yaml3:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties3:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.2
+
+
+#Analyzing keyspaces system as original 
+
+for i in $(cqlsh -e 'desc keyspaces;'); do cqlsh -e "desc keyspace $i;" | grep KEYSPACE; done
+CREATE KEYSPACE system_traces WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '2'}  AND durable_writes = true;
+CREATE KEYSPACE system_schema WITH replication = {'class': 'LocalStrategy'}  AND durable_writes = true;
+CREATE KEYSPACE system_auth WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}  AND durable_writes = true;
+CREATE KEYSPACE system WITH replication = {'class': 'LocalStrategy'}  AND durable_writes = true;
+CREATE KEYSPACE system_distributed WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '3'}  AND durable_writes = true;
+
+#Changing the topology and RF=3
+
+ALTER KEYSPACE system_auth WITH replication = { 'class' : ''NetworkTopologyStrategy'', 'replication_factor': '3'};
+ALTER KEYSPACE system_distributed WITH replication = { 'class' : ''NetworkTopologyStrategy'', 'replication_factor': '3'};
+ALTER KEYSPACE system_traces WITH replication = { 'class' : ''NetworkTopologyStrategy'', 'replication_factor': '3'};
+nodetool repair system_auth
+nodetool repair system_distributed
+nodetool repair system_traces
+
+#To complete the process, changing the snitch, edit the cassandra-rackdc.properties file, and set the data-center name.
+nodetool repair #(in all nodes)
+nodetool cleanup #(in all nodes)
+
+#Creating my keyspace and the tables with different compaction types
+CREATE KEYSPACE keyspace1 WITH replication = { 'class' : 'NetworkTopologyStrategy', 'north' : 3};
+USE keyspace1;
+CREATE TABLE stcstable1 (a int, b int, c int, PRIMARY KEY ((a), b)) WITH compaction = { 'class' : 'SizeTieredCompactionStrategy' };
+CREATE TABLE lcstable1 (a int, b int, c int, PRIMARY KEY ((a), b)) WITH compaction = { 'class' : 'LeveledCompactionStrategy' };
+CREATE TABLE twcstable1 (a int, b int, c int, PRIMARY KEY ((a), b)) WITH compaction = { 'class' : 'TimeWindowCompactionStrategy', 'compaction_window_unit' : 'MINUTES', 'compaction_window_size' : '30', 'split_during_flush' : true };
+
+#Inserts
+for i in $(seq 1000 1000 10000); do for j in $(seq 1 1 1000); do cqlsh -e "INSERT INTO keyspace1.stcstable1 (a, b, c) VALUES ($i, $(( $j + 2 )), $(( $j + 3 )))"; done; done
+for i in $(seq 1000 1000 10000); do for j in $(seq 1 1 1000); do cqlsh -e "INSERT INTO keyspace1.lcstable1 (a, b, c) VALUES ($i, $(( $j + 2 )), $(( $j + 3 )))"; done; done
+for i in $(seq 1000 1000 10000); do for j in $(seq 1 1 1000); do cqlsh -e "INSERT INTO keyspace1.twcstable1 (a, b, c) VALUES ($i, $(( $j + 2 )), $(( $j + 3 ))) USING TTL 360;"; done; done
+
+#If wanting follow:
+watch -d -n 300 'cqlsh -e "SELECT COUNT (*) FROM keyspace1.stcstable1;"'
+
+#Creating backups
+nodetool flush
+nodetool snapshot #The snapshot is created under Scylla data directory /var/lib/scylla/data
+nodetool listsnapshots
+cqlsh -e “DESC SCHEMA” > schema1.cql
+
+#Collecting information
+cat /etc/scylla/scylla.yaml | grep cluster_name
+cat /etc/scylla/scylla.yaml | grep seeds:
+cat /etc/scylla/scylla.yaml | grep endpoint_snitch
+scylla --version
+cat /etc/scylla/scylla.yaml | grep authenticator
+# cluster_name: 'DockerCluster'
+# - seeds: "172.19.0.2"
+#endpoint_snitch: GossipingPropertyFileSnitch
+#2020.1.6-0.20210202.c6a70535c
+
+#Adding new DC:
+docker run --name c2 --privileged --network scylla-net --ip 172.19.0.5 -v /mnt/xfs/c2:/var/lib/scylla -v /home/noelly/scylla.yaml4:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties4:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.2
+docker run --name c3 --privileged --network scylla-net --ip 172.19.0.6 -v /mnt/xfs/c3:/var/lib/scylla -v /home/noelly/scylla.yaml5:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties5:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.2
+docker run --name c4 --privileged --network scylla-net --ip 172.19.0.7 -v /mnt/xfs/c4:/var/lib/scylla -v /home/noelly/scylla.yaml6:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties6:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.2
+
+#If the node failure:
+nodetool drain
+supervisorctl stop scylla
+sudo rm -rf /var/lib/scylla/data
+sudo find /var/lib/scylla/commitlog -type f -delete
+sudo find /var/lib/scylla/hints -type f -delete
+sudo find /var/lib/scylla/view_hints -type f -delete
+
+#Updating keyspaces, including the new DC
+ALTER KEYSPACE keyspace1 WITH replication = { 'class' : 'NetworkTopologyStrategy', 'north' : 3, 'south' : 3};
+ALTER KEYSPACE system_auth WITH replication = { 'class' : 'NetworkTopologyStrategy', 'north' : 3, 'south' : 3};
+ALTER KEYSPACE system_distributed WITH replication = { 'class' : 'NetworkTopologyStrategy', 'north' : 3, 'south' : 3};
+ALTER KEYSPACE system_traces WITH replication = { 'class' : 'NetworkTopologyStrategy', 'north' : 3, 'south' : 3};
+nodetool repair keyspace1;
+nodetool repair system_auth ;
+nodetool repair system_distributed ;
+nodetool repair system_traces
+
+#Run nodetool rebuild on each node in the new datacenter, specify the existing datacenter name in the rebuild command.
+nodetool rebuild -- north
+
+#Scylla manager - better explained in: https://docs.google.com/document/d/15mSsSS9RFUWzcNAVPH-7Nclo1PXHLIBm3aYpgTUr7K8/edit#
+docker pull scylladb/scylla-manager:2.2.0
+docker pull scylladb/scylla-manager-agent:2.2.0
+
+docker run -d -p 9000:9000 --name minio1 --privileged --network scylla-net --ip 172.19.0.8 -e "MINIO_ACCESS_KEY=minio" -e "MINIO_SECRET_KEY=minio123" -v /mnt/minio:/data minio/minio server /data
+docker build -t scylladb/scylla-with-agent .
+docker run -d --name scylla  --privileged --network scylla-net --ip 172.19.0.9 --link minio1 --mount type=volume,source=scylla_db_data,target=/var/lib/scylla scylladb/scylla-with-agent --smp 1 --memory=1G
+docker run -d --name scylla-manager-db --privileged --network scylla-net --ip 172.19.0.10 --mount type=volume,source=scylla_manager_db_data,target=/var/lib/scylla scylladb/scylla --smp 1 --memory=1G
+docker run -d -v /mnt/xfs/scylla-manager:/var/lib/scylla --name scylla-manager  --privileged --network scylla-net --ip 172.19.0.11 --link scylla-manager-db --link scylla scylladb/scylla-manager:2.2.0
+
+#Scylla Agent
+#Inside agent nodes:
+yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+curl -o /etc/yum.repos.d/scylla-manager.repo -L http://downloads.scylladb.com/rpm/centos/scylladb-manager-2.2.repo
+yum -y install scylla-manager-agent
+
+scyllamgr_auth_token_gen #only in one node
+scylla-manager-agent -c /etc/scylla-manager-agent/scylla-manager-agent.yaml &>> ~/agentlogs.txt &
+
+netstat -nltup
+ps -ef
+
+#Connecting manager to agents
+docker exec -it scylla-manager sctool cluster add -c DockerCluster --host=172.19.0.2 --auth-token=q4u3M7bmTlvBcPnHcYOGWkvswpzkp2LyLw905lb96NSHzy2hLfYtgznPusLr4lChETSmqWFODVSJaVcQUmhF3xO6xLUzOWqCpcc2SBu8GuKKvh1ONdYr76YoYJRfl1LY
+docker exec -it scylla-manager bash
+sctool status -c c97a1493-f39c-4727-a49b-259ff06168e2
+
+#Repair
+docker exec -it scylla-manager sctool repair -c c97a1493-f39c-4727-a49b-259ff06168e2 --dc north
+sctool task progress repair/fe94ea89-c8dc-4b8b-8c73-e39a08009eb4 --cluster c97a1493-f39c-4727-a49b-259ff06168e2 --details
+sctool repair -c c97a1493-f39c-4727-a49b-259ff06168e2 --dc south
+
+#Restart Scylla node one by one using. 
+Supervisorctl restart scylla
+
+#DC Decommission
+nodetool repair -pr 
+#Alter each cluster KEYSPACES, so they will no longer replicate data to the decommissioned data-center.
+#Before:
+CREATE KEYSPACE keyspace1 WITH REPLICATION = {'class' : 'NetworkTopologyStrategy', 'north' : 3, 'south' : 3};
+#After:
+ALTER KEYSPACE keyspace1 WITH REPLICATION = {'class' : 'NetworkTopologyStrategy', 'south' : 3};
+
+#Removing seeds from DC that will be kept
+docker run --name c2 --privileged --network scylla-net --ip 172.19.0.5 -v /mnt/xfs/c2:/var/lib/scylla -v /home/noelly/scylla.yaml4:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties4:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.5
+docker run --name c3 --privileged --network scylla-net --ip 172.19.0.6 -v /mnt/xfs/c3:/var/lib/scylla -v /home/noelly/scylla.yaml5:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties5:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.5
+docker run --name c4 --privileged --network scylla-net --ip 172.19.0.7 -v /mnt/xfs/c4:/var/lib/scylla -v /home/noelly/scylla.yaml6:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties6:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.5
+
+#nodes decommission
+docker exec -it b2 nodetool decommission
+docker exec -it b3 nodetool decommission
+docker exec -it b4 nodetool decommission
+
+#adding new node
+docker run --name c5 --privileged --network scylla-net --ip 172.19.0.12 -v /mnt/xfs/c5:/var/lib/scylla -v /home/noelly/scylla.yaml7:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties6:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.5
+nodetool cleanup  #except the new node that has just been added.
+
+#removing seed
+docker stop c2
+docker rm c2
+
+#promoting a node as seed
+docker run --name c3 --privileged --network scylla-net --ip 172.19.0.6 -v /mnt/xfs/c3:/var/lib/scylla -v /home/noelly/scylla.yaml5:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties5:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.6
+docker run --name c5 --privileged --network scylla-net --ip 172.19.0.12 -v /mnt/xfs/c5:/var/lib/scylla -v /home/noelly/scylla.yaml7:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties6:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.6
+
+#replacing node
+docker run --name c6 --privileged --network scylla-net --ip 172.19.0.13 -v /mnt/xfs/c6:/var/lib/scylla -v /home/noelly/scylla.yaml8:/etc/scylla/scylla.yaml -v /home/noelly/cassandra-rackdc.properties4:/etc/scylla/cassandra-rackdc.properties -d scylladb/scylla-enterprise:2020.1.6 --overprovisioned 1 --seeds 172.19.0.6
+
+
+#Monitoring explained in: https://docs.google.com/document/d/1BIXr4OQoPfSJ4hsQMk9qUcKtZvJHF2r7zSU0TrazVaU/edit#
+
+###THE END###
+

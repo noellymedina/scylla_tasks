@@ -1,0 +1,33 @@
+---
+- name: Install scylla on centos
+  hosts: centos
+  become: true
+  vars:
+    scylla_repo: 'http://downloads.scylladb.com/downloads/scylla-enterprise/rpm/centos/scylladb-2021.1/$basearch/'
+    scylla_2nd_repo: 'http://downloads.scylladb.com/downloads/scylla-enterprise/rpm/centos/scylladb-2021.1/noarch/'
+    scylla_package: scylla-enterprise
+  tasks:
+    - name: Configure Scylla Repository
+      yum_repository:
+        name: scylla-2020.1
+        file: scylla
+        description: Scylla for Centos - $basearch
+        enabled: true
+        baseurl: "{{ scylla_repo }}"
+        gpgcheck: no
+
+    - name: Configure Scylla Repository
+      yum_repository:
+        name: scylla-generic-2020.1
+        file: scylla
+        description: Scylla for centos
+        enabled: true
+        baseurl: "{{ scylla_2nd_repo }}"
+        gpgcheck: no
+
+
+    - name: Install Scylla
+      yum: 
+        name: "{{ scylla_package }}"
+        state: present
+...
